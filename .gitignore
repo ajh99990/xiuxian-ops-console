@@ -1,0 +1,7 @@
+.runtime/
+node_modules/
+dist/
+accounts.config.json
+.env
+.env.*
+!.env.example
