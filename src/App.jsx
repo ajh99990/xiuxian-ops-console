@@ -143,7 +143,6 @@ function App() {
   const [logs, setLogs] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const [tokenDraft, setTokenDraft] = useState('');
   const [gameView, setGameView] = useState(null);
   const logRef = useRef(null);
 
@@ -210,7 +209,6 @@ function App() {
     const job = emptyJob(scripts);
     setJobs((items) => [...items, job]);
     setSelectedId(job._uiId);
-    setTokenDraft('');
   }
 
   function removeSelected() {
@@ -231,7 +229,6 @@ function App() {
         notes: job.notes || '',
         recoveryId: job.recoveryId || '',
       };
-      if (job._uiId === selectedJob?._uiId && tokenDraft.trim()) payload.token = tokenDraft.trim();
       return payload;
     });
   }
@@ -267,7 +264,6 @@ function App() {
 
   useEffect(() => {
     if (!selectedJob) return;
-    setTokenDraft('');
     loadLogs(selectedJob.name).catch(() => {});
   }, [selectedJob?._uiId]);
 
@@ -440,10 +436,6 @@ function App() {
                     <Copy size={16} />
                   </button>
                 </div>
-              </label>
-              <label>
-                <span>Token {selectedJob.tokenMasked ? `(${selectedJob.tokenMasked})` : ''}</span>
-                <input value={tokenDraft} onChange={(event) => setTokenDraft(event.target.value)} placeholder="可选，留空则保留原 token" />
               </label>
               <label className="wide">
                 <span>环境变量</span>

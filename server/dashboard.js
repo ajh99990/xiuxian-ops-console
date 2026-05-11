@@ -292,9 +292,22 @@ async function clearLogs(name) {
 
 function patchGameAsset(text) {
   return text
-    .replace(/function sp\(\)\{const e=Ps\(\);return e==="xx\.liulabinfo\.org"\?"xxapi\.liulabinfo\.org":e\|\|"127\.0\.0\.1"\}/, 'function sp(){return"xxapi.liulabinfo.org"}')
-    .replace(/function ap\(\)\{return Hn\(Ps\(\)\)\?"443":"7350"\}/, 'function ap(){return"443"}')
-    .replace(/function np\(\)\{return Hn\(Ps\(\)\)\}/, 'function np(){return true}');
+    .replace(
+      /function\s+([A-Za-z_$][\w$]*)\(\)\{const\s+([A-Za-z_$][\w$]*)=Ps\(\);return\s+\2==="xx\.liulabinfo\.org"\?"xxapi\.liulabinfo\.org":\2\|\|"127\.0\.0\.1"\}/g,
+      'function $1(){return"xxapi.liulabinfo.org"}',
+    )
+    .replace(
+      /function\s+([A-Za-z_$][\w$]*)\(\)\{return\s+[A-Za-z_$][\w$]*\(Ps\(\)\)\?"443":"7350"\}/g,
+      'function $1(){return"443"}',
+    )
+    .replace(
+      /function\s+([A-Za-z_$][\w$]*)\(\)\{return\s+[A-Za-z_$][\w$]*\(Ps\(\)\)\}/g,
+      'function $1(){return true}',
+    )
+    .replace(
+      /new\s+([A-Za-z_$][\w$]*)\("supersecret_dev_key",[A-Za-z_$][\w$]*\(\),[A-Za-z_$][\w$]*\(\),[A-Za-z_$][\w$]*\)/g,
+      'new $1("supersecret_dev_key","xxapi.liulabinfo.org","443",true)',
+    );
 }
 
 async function proxyGameAsset(req, res, next) {
@@ -305,6 +318,7 @@ async function proxyGameAsset(req, res, next) {
     const type = response.headers.get('content-type') || 'application/octet-stream';
     const buffer = Buffer.from(await response.arrayBuffer());
 
+    res.set('Cache-Control', 'no-store');
     res.type(type);
     if (type.includes('javascript')) {
       res.send(patchGameAsset(buffer.toString('utf8')));
@@ -324,6 +338,7 @@ async function proxyGamePage(req, res, next) {
     html = html
       .replace(/(src|href)=["']\/assets\//g, '$1="/game-assets/')
       .replace(/<base[^>]*>/gi, '');
+    res.set('Cache-Control', 'no-store');
     res.type('html').send(html);
   } catch (error) {
     next(error);
@@ -454,6 +469,7 @@ async function createServer() {
   });
 
   app.get('/game', (req, res) => {
+    res.set('Cache-Control', 'no-store');
     res.type('html').send(gameBootstrapPage(req.query.recoveryId));
   });
 
