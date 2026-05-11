@@ -474,7 +474,7 @@ async function createServer() {
   if (process.env.NODE_ENV === 'production') {
     const dist = path.join(ROOT, 'dist');
     app.use(express.static(dist));
-    app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html')));
+    app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(dist, 'index.html')));
   } else {
     const { createServer: createViteServer } = await import('vite');
     server = http.createServer(app);
