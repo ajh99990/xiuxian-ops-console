@@ -60,8 +60,7 @@ button:disabled {
 .top-actions,
 .control-strip,
 .editor-actions,
-.script-chip,
-.metric {
+.script-chip {
   display: flex;
   align-items: center;
 }
@@ -94,6 +93,29 @@ h1 {
 
 h2 {
   font-size: 18px;
+}
+
+.brand-line {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.version-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid rgba(244, 189, 93, 0.52);
+  border-radius: 8px;
+  color: #07100f;
+  background: linear-gradient(135deg, var(--gold), rgba(67, 215, 160, 0.92));
+  box-shadow: 0 0 26px rgba(244, 189, 93, 0.18);
+  font-family: "DIN Condensed", "Avenir Next Condensed", sans-serif;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
 .top-actions,
@@ -144,44 +166,8 @@ h2 {
   border-color: var(--line-hot);
 }
 
-.metrics-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin: 28px 0 18px;
-}
-
-.metric {
-  min-height: 86px;
-  gap: 12px;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: linear-gradient(145deg, rgba(16, 33, 29, 0.82), rgba(9, 18, 19, 0.72));
-  box-shadow: var(--shadow);
-}
-
-.metric svg {
-  color: var(--jade);
-}
-
-.metric span {
-  color: var(--muted);
-}
-
-.metric strong {
-  margin-left: auto;
-  font-family: "DIN Condensed", "Avenir Next Condensed", sans-serif;
-  font-size: 34px;
-  color: var(--gold);
-}
-
-.metric.warn strong {
-  color: var(--cinnabar);
-}
-
 .message {
-  margin-bottom: 18px;
+  margin: 18px 0;
   padding: 12px 14px;
   border: 1px solid rgba(238, 96, 75, 0.45);
   border-radius: 8px;
@@ -191,8 +177,9 @@ h2 {
 
 .workspace {
   display: grid;
-  grid-template-columns: 330px minmax(390px, 1fr) 430px;
+  grid-template-columns: 330px minmax(380px, 440px) minmax(520px, 1fr);
   gap: 16px;
+  margin-top: 28px;
   min-height: 630px;
 }
 
@@ -212,6 +199,75 @@ h2 {
   padding: 16px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(90deg, rgba(67, 215, 160, 0.10), transparent);
+}
+
+.jobs-pane .pane-head {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.logs-pane .pane-head {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.pane-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.job-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.job-summary span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 7px;
+  border: 1px solid rgba(175, 221, 203, 0.14);
+  border-radius: 7px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.035);
+  font-size: 12px;
+}
+
+.job-summary strong {
+  color: var(--gold);
+  font: inherit;
+  line-height: inherit;
+}
+
+.jobs-head-actions {
+  display: flex;
+  width: 100%;
+}
+
+.jobs-head-actions .ghost-btn {
+  width: 100%;
+}
+
+.detail-pane .pane-head {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.detail-pane .control-strip {
+  width: 100%;
+  flex-wrap: wrap;
+}
+
+.detail-pane .control-strip button {
+  flex: 1 1 94px;
 }
 
 .job-list {
@@ -285,7 +341,7 @@ h2 {
 
 .editor-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   padding: 16px;
 }
@@ -358,6 +414,11 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
+}
+
+.log-actions .ghost-btn {
+  flex: 1;
 }
 
 .log-actions svg {
@@ -439,7 +500,4 @@ textarea:focus {
     display: grid;
   }
 
-  .metrics-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }

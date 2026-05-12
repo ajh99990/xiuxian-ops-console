@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client';
 import { motion } from 'framer-motion';
 import {
   Activity,
-  AlertTriangle,
   CircleStop,
   Copy,
   ExternalLink,
@@ -14,10 +13,8 @@ import {
   ListPlus,
   Play,
   Power,
-  Radio,
   RefreshCw,
   Save,
-  ScrollText,
   Shield,
   Square,
   Terminal,
@@ -55,6 +52,14 @@ const emptyJob = (scripts) => ({
   hasToken: false,
   runtime: { running: false },
 });
+
+function logNameForJob(job) {
+  return job ? (job.previousName || job.name || '') : '';
+}
+
+function emptyLogView(name = '', loading = false) {
+  return { name, text: '', loading };
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -140,11 +145,14 @@ function App() {
   const [jobs, setJobs] = useState([]);
   const [scripts, setScripts] = useState([]);
   const [selectedId, setSelectedId] = useState('');
-  const [logs, setLogs] = useState('');
+  const [logView, setLogView] = useState(emptyLogView());
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
   const [gameView, setGameView] = useState(null);
   const logRef = useRef(null);
+  const selectedIdRef = useRef('');
+  const selectedLogNameRef = useRef('');
+  const logRequestIdRef = useRef(0);
 
   const selectedJob = useMemo(
     () => jobs.find((job) => job._uiId === selectedId) || jobs[0] || null,
@@ -152,8 +160,9 @@ function App() {
   );
 
   async function load(options = {}) {
-    const preferredName = options.preferredName ?? selectedJob?.name ?? '';
-    const previousName = options.previousName ?? selectedJob?.previousName ?? '';
+    const currentSelectedId = options.selectedId ?? selectedIdRef.current;
+    const preferredName = options.preferredName ?? selectedLogNameRef.current ?? '';
+    const previousName = options.previousName ?? '';
     const [scriptList, jobList] = await Promise.all([
       api('/api/scripts'),
       api('/api/jobs'),
@@ -166,20 +175,40 @@ function App() {
       job.name === preferredName
       || job.previousName === preferredName
       || job.name === previousName
-      || job._uiId === selectedId
+      || job._uiId === currentSelectedId
     ));
 
-    if (nextSelected) setSelectedId(nextSelected._uiId);
-    else if (!selectedId && nextJobs[0]) setSelectedId(nextJobs[0]._uiId);
-    else if (selectedId && !nextJobs.some((job) => job._uiId === selectedId)) setSelectedId(nextJobs[0]?._uiId || '');
+    if (nextSelected) {
+      selectedIdRef.current = nextSelected._uiId;
+      selectedLogNameRef.current = logNameForJob(nextSelected);
+      setSelectedId(nextSelected._uiId);
+    } else if (!currentSelectedId && nextJobs[0]) {
+      selectedIdRef.current = nextJobs[0]._uiId;
+      selectedLogNameRef.current = logNameForJob(nextJobs[0]);
+      setSelectedId(nextJobs[0]._uiId);
+    } else if (currentSelectedId && !nextJobs.some((job) => job._uiId === currentSelectedId)) {
+      const fallbackId = nextJobs[0]?._uiId || '';
+      selectedIdRef.current = fallbackId;
+      selectedLogNameRef.current = logNameForJob(nextJobs[0]);
+      setSelectedId(fallbackId);
+    }
   }
 
-  async function loadLogs(name = selectedJob?.name) {
-    if (!name) {
-      setLogs('');
+  async function loadLogs(name = logNameForJob(selectedJob)) {
+    const targetName = String(name || '');
+    const requestId = logRequestIdRef.current + 1;
+    logRequestIdRef.current = requestId;
+
+    if (!targetName) {
+      setLogView(emptyLogView());
       return;
     }
-    setLogs(trimLogLines(await api(`/api/jobs/${encodeURIComponent(name)}/logs?limit=700`)));
+
+    setLogView(emptyLogView(targetName, true));
+    const nextLogs = trimLogLines(await api(`/api/jobs/${encodeURIComponent(targetName)}/logs?limit=700`));
+    if (logRequestIdRef.current === requestId && selectedLogNameRef.current === targetName) {
+      setLogView({ name: targetName, text: nextLogs, loading: false });
+    }
   }
 
   async function runAction(action, options = {}) {
@@ -208,13 +237,27 @@ function App() {
   function addJob() {
     const job = emptyJob(scripts);
     setJobs((items) => [...items, job]);
+    selectedIdRef.current = job._uiId;
+    selectedLogNameRef.current = logNameForJob(job);
     setSelectedId(job._uiId);
+    setLogView(emptyLogView(logNameForJob(job)));
   }
 
   function removeSelected() {
     if (!selectedJob) return;
     setJobs((items) => items.filter((job) => job._uiId !== selectedJob._uiId));
+    selectedIdRef.current = '';
+    selectedLogNameRef.current = '';
     setSelectedId('');
+    setLogView(emptyLogView());
+  }
+
+  function selectJob(job) {
+    const logName = logNameForJob(job);
+    selectedIdRef.current = job._uiId;
+    selectedLogNameRef.current = logName;
+    setSelectedId(job._uiId);
+    setLogView(emptyLogView(logName, true));
   }
 
   function serializeJobs() {
@@ -264,30 +307,36 @@ function App() {
 
   useEffect(() => {
     if (!selectedJob) return;
-    loadLogs(selectedJob.name).catch(() => {});
-  }, [selectedJob?._uiId]);
+    selectedIdRef.current = selectedJob._uiId;
+    selectedLogNameRef.current = logNameForJob(selectedJob);
+    loadLogs(logNameForJob(selectedJob)).catch((error) => setMessage(error.message));
+  }, [selectedId]);
 
   useEffect(() => {
     const events = new EventSource('/api/events');
     events.onmessage = (event) => {
       const payload = JSON.parse(event.data);
-      if (payload.type === 'log' && payload.name === selectedJob?.name) {
-        setLogs((value) => trimLogLines(`${value}${payload.text}`));
+      if (payload.type === 'log' && payload.name === selectedLogNameRef.current) {
+        setLogView((value) => (
+          value.name === payload.name
+            ? { name: payload.name, text: trimLogLines(`${value.text}${payload.text}`), loading: false }
+            : value
+        ));
       }
-      if (payload.type === 'log_reset' && payload.name === selectedJob?.name) {
-        setLogs('');
+      if (payload.type === 'log_reset' && payload.name === selectedLogNameRef.current) {
+        setLogView(emptyLogView(payload.name));
       }
       if (payload.type === 'status' || payload.type === 'config') {
-        load({ preferredName: selectedJob?.name }).catch(() => {});
+        load({ preferredName: selectedLogNameRef.current, selectedId: selectedIdRef.current }).catch(() => {});
       }
     };
     return () => events.close();
-  }, [selectedJob?.name]);
+  }, []);
 
   useEffect(() => {
     if (!logRef.current) return;
     logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [logs, selectedJob?.name]);
+  }, [logView.name, logView.text]);
 
   const runningCount = jobs.filter((job) => job.runtime?.running).length;
   const enabledCount = jobs.filter((job) => job.enabled !== false).length;
@@ -299,9 +348,12 @@ function App() {
           <motion.p initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} className="eyebrow">
             Xiuxian Operations
           </motion.p>
-          <motion.h1 initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
-            修仙脚本控制台
-          </motion.h1>
+          <div className="brand-line">
+            <motion.h1 initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+              修仙脚本控制台
+            </motion.h1>
+            <span className="version-badge">v0.7.1</span>
+          </div>
         </div>
         <div className="top-actions">
           <button type="button" className="ghost-btn" onClick={() => runAction(load)} disabled={busy}>
@@ -319,29 +371,6 @@ function App() {
         </div>
       </section>
 
-      <section className="metrics-grid">
-        <div className="metric">
-          <Radio size={18} />
-          <span>运行</span>
-          <strong>{runningCount}</strong>
-        </div>
-        <div className="metric">
-          <Shield size={18} />
-          <span>启用</span>
-          <strong>{enabledCount}</strong>
-        </div>
-        <div className="metric">
-          <ScrollText size={18} />
-          <span>任务</span>
-          <strong>{jobs.length}</strong>
-        </div>
-        <div className="metric warn">
-          <AlertTriangle size={18} />
-          <span>提示</span>
-          <strong>{message ? '!' : 'OK'}</strong>
-        </div>
-      </section>
-
       {message ? <div className="message">{message}</div> : null}
 
       <section className="workspace">
@@ -349,11 +378,21 @@ function App() {
           <div className="pane-head">
             <div>
               <span className="section-kicker">Jobs</span>
-              <h2>任务编队</h2>
+              <div className="pane-title-row">
+                <h2>任务编队</h2>
+                <div className="job-summary" aria-label="任务统计">
+                  <span>运行 <strong>{runningCount}</strong></span>
+                  <span>启用 <strong>{enabledCount}</strong></span>
+                  <span>任务 <strong>{jobs.length}</strong></span>
+                </div>
+              </div>
             </div>
-            <button type="button" className="icon-btn" onClick={addJob} title="新增任务">
-              <ListPlus size={18} />
-            </button>
+            <div className="jobs-head-actions">
+              <button type="button" className="ghost-btn" onClick={addJob}>
+                <ListPlus size={16} />
+                新增任务
+              </button>
+            </div>
           </div>
 
           <div className="job-list">
@@ -362,7 +401,7 @@ function App() {
                 type="button"
                 key={job._uiId}
                 className={`job-row ${job._uiId === selectedJob?._uiId ? 'selected' : ''} ${job.runtime?.running ? 'running' : ''}`}
-                onClick={() => setSelectedId(job._uiId)}
+                onClick={() => selectJob(job)}
               >
                 <span className="job-sigil">{scriptSigil(job.script)}</span>
                 <span className="job-copy">
@@ -481,8 +520,7 @@ function App() {
             <div className="log-actions">
               <button
                 type="button"
-                className="icon-btn"
-                title="清空当前日志"
+                className="ghost-btn"
                 disabled={!selectedJob || busy}
                 onClick={() => runAction(
                   () => api(`/api/jobs/${encodeURIComponent(selectedJob.name)}/logs/clear`, { method: 'POST' }),
@@ -490,11 +528,12 @@ function App() {
                 )}
               >
                 <Trash2 size={16} />
+                清空日志
               </button>
               <Terminal size={19} />
             </div>
           </div>
-          <pre ref={logRef}>{logs || '暂无日志'}</pre>
+          <pre ref={logRef} key={logView.name}>{logView.loading ? '加载日志中...' : (logView.text || '暂无日志')}</pre>
         </section>
       </section>
 

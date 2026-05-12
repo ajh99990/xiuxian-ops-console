@@ -34,12 +34,14 @@ const CONFIG = {
   breakthroughRetryMs: envNumber(['XIULIAN_BREAKTHROUGH_RETRY_MS', 'XIUXIAN_BREAKTHROUGH_RETRY_MS'], 30000),
   breakthroughPillId: process.env.XIULIAN_BREAKTHROUGH_PILL_ID || process.env.XIUXIAN_BREAKTHROUGH_PILL_ID || '',
   safeTeleportId: process.env.XIULIAN_SAFE_TELEPORT_ID || process.env.XIUXIAN_SAFE_TELEPORT_ID || 'safe_zone',
+  safeTeleportMaxAttempts: envNumber(['XIULIAN_SAFE_TELEPORT_MAX_ATTEMPTS', 'XIUXIAN_SAFE_TELEPORT_MAX_ATTEMPTS'], 2),
   minLifespanRemainingYears: envNumber(['XIULIAN_MIN_LIFESPAN_REMAINING_YEARS', 'XIUXIAN_MIN_LIFESPAN_REMAINING_YEARS'], 5),
 };
 
 let currentPlayer = null;
 let currentState = null;
 let lastBreakthroughFailureAt = 0;
+let safeTeleportAttempts = 0;
 
 const NEXT_REALM_BY_ID = {
   realm_qi_refining: 'realm_foundation',
@@ -58,6 +60,7 @@ function validateConfig() {
   assertNumber('interval', CONFIG.intervalMs, { min: 0, inclusive: false });
   assertNumber('seclusion stamina threshold', CONFIG.seclusionStaminaMin, { min: 0 });
   assertNumber('breakthrough retry delay', CONFIG.breakthroughRetryMs, { min: 0, inclusive: false });
+  assertNumber('safe teleport max attempts', CONFIG.safeTeleportMaxAttempts, { min: 0 });
   assertNumber('minimum lifespan remaining years', CONFIG.minLifespanRemainingYears, { min: 0 });
 }
 
@@ -125,6 +128,10 @@ function isMinorRealmGateError(error) {
 
 function isSeclusionUnsafeAreaError(error) {
   return /闭关需在安全区域内进行|安全区域/.test(formatError(error));
+}
+
+function isAlreadyAtTargetError(error) {
+  return /你已在目标位置|已在目标位置/.test(formatError(error));
 }
 
 function summarizeCultivation(result) {
@@ -202,6 +209,29 @@ async function teleportToSafeZone(client, state, cycle) {
   return nextState;
 }
 
+async function tryReturnToSafeZone(client, state, cycle) {
+  if (safeTeleportAttempts >= CONFIG.safeTeleportMaxAttempts) {
+    console.error(`[${now()}] #${cycle} 闭关安全区修复已尝试 ${safeTeleportAttempts}/${CONFIG.safeTeleportMaxAttempts} 次，停止继续传送，改为普通修炼。`);
+    return { state, shouldRetrySeclusion: false };
+  }
+
+  safeTeleportAttempts += 1;
+  console.log(`[${now()}] #${cycle} 尝试回安全区 ${safeTeleportAttempts}/${CONFIG.safeTeleportMaxAttempts}。`);
+
+  try {
+    const nextState = await teleportToSafeZone(client, state, cycle);
+    return { state: nextState, shouldRetrySeclusion: true };
+  } catch (error) {
+    if (!isAlreadyAtTargetError(error)) throw error;
+
+    console.log(`[${now()}] #${cycle} 传送阵提示已在目标位置，刷新状态后直接重试闭关: ${formatError(error)}`);
+    const nextState = await fetchState(client);
+    currentPlayer = nextState?.player ?? currentPlayer;
+    currentState = nextState;
+    return { state: nextState, shouldRetrySeclusion: true };
+  }
+}
+
 async function cultivateOnce(client, state, cycle, options = {}) {
   const {
     mode = chooseCultivationMode(state?.player),
@@ -219,10 +249,13 @@ async function cultivateOnce(client, state, cycle, options = {}) {
   } catch (error) {
     if (mode === 'seclusion' && isSeclusionUnsafeAreaError(error)) {
       console.log(`[${now()}] 闭关失败，需要先回安全区: ${formatError(error)}`);
-      workingState = await teleportToSafeZone(client, state, cycle);
+      const safeReturn = await tryReturnToSafeZone(client, state, cycle);
+      workingState = safeReturn.state;
 
       try {
+        if (!safeReturn.shouldRetrySeclusion) throw error;
         result = await client.rpc('action.cultivate', { mode: 'seclusion' });
+        safeTeleportAttempts = 0;
       } catch (retryError) {
         if (!fallbackSeclusion) throw retryError;
 
@@ -242,6 +275,7 @@ async function cultivateOnce(client, state, cycle, options = {}) {
   const nextState = { ...workingState, ...result };
   currentPlayer = result?.player ?? currentPlayer;
   currentState = nextState;
+  if (actualMode === 'seclusion') safeTeleportAttempts = 0;
 
   console.log(`[${now()}] #${cycle} ${label || formatMode(actualMode)} stamina_before=${staminaBefore ?? '-'} | ${summarizeCultivation(result)}`);
   return nextState;
@@ -353,5 +387,5 @@ runMain(runScript({
     currentPlayer = null;
     currentState = null;
   },
-  startMessage: () => `auto cultivate started, interval=${CONFIG.intervalMs}ms mode=${CONFIG.mode} seclusion_stamina_min=${CONFIG.seclusionStaminaMin} breakthrough_retry=${CONFIG.breakthroughRetryMs}ms safe_teleport=${CONFIG.safeTeleportId} min_lifespan_remaining=${CONFIG.minLifespanRemainingYears}`,
+  startMessage: () => `auto cultivate started, interval=${CONFIG.intervalMs}ms mode=${CONFIG.mode} seclusion_stamina_min=${CONFIG.seclusionStaminaMin} breakthrough_retry=${CONFIG.breakthroughRetryMs}ms safe_teleport=${CONFIG.safeTeleportId} safe_teleport_max_attempts=${CONFIG.safeTeleportMaxAttempts} min_lifespan_remaining=${CONFIG.minLifespanRemainingYears}`,
 }));

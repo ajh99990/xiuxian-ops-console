@@ -1,10 +1,11 @@
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 
-const DEFAULT_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aWQiOiIyNzgxNGQ1MC1hODRhLTRkNzYtYTQyNi0yZDc2OTk4MzRhYjEiLCJ1aWQiOiJjZmM3NDFlMy1lYjJmLTQyMGYtYTEwMi03NTBhMjE2YTc0NWYiLCJ1c24iOiJET3hzZnBCbU1zIiwidnJzIjp7ImNsaWVudCI6Im1vYmlsZS13ZWIifSwiZXhwIjoxNzc4NDY3ODM3LCJpYXQiOjE3NzgzMjI0MDJ9.SH8rIZ8I4DJb2c9h9XinwQXI1Q5zXfhlDaYq7DDvJeI';
+const DEFAULT_TOKEN = '';
 const DEFAULT_SERVER_KEY = 'supersecret_dev_key';
 const DEFAULT_SESSION_CACHE_DIR = path.join(__dirname, '.runtime', 'sessions');
 const SESSION_REFRESH_WINDOW_MS = 60_000;
+const CONNECT_RENEW_COOLDOWN_MS = 10_000;
 
 function now() {
   return new Date().toLocaleString('zh-CN', { hour12: false });
@@ -34,6 +35,12 @@ function formatError(error) {
   if (typeof error === 'string') return error;
   if (error.message) return error.message;
   return JSON.stringify(error);
+}
+
+function makeConnectError(message, code = 'XIUXIAN_WS_CONNECT_ERROR') {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function decodeBase64Url(value) {
@@ -110,6 +117,7 @@ function makeNakamaConfig(options = {}) {
     authVars: options.authVars || { client: 'mobile-web' },
     requestTimeoutMs: envNumber(['XIUXIAN_TIMEOUT_MS', 'XIULIAN_TIMEOUT_MS'], 12000),
     heartbeatMs: envNumber(['XIUXIAN_HEARTBEAT_MS', 'XIULIAN_HEARTBEAT_MS'], 25000),
+    connectRenewCooldownMs: envNumber(['XIUXIAN_CONNECT_RENEW_COOLDOWN_MS', 'XIULIAN_CONNECT_RENEW_COOLDOWN_MS'], options.connectRenewCooldownMs ?? CONNECT_RENEW_COOLDOWN_MS),
     cidPrefix: options.cidPrefix || 'rpc',
     verbose: Boolean(options.verbose),
   };
@@ -218,6 +226,7 @@ class NakamaSocketClient {
     this.cid = 0;
     this.heartbeatTimer = null;
     this.sessionLoaded = false;
+    this.lastConnectRenewalAt = 0;
   }
 
   get url() {
@@ -357,27 +366,54 @@ class NakamaSocketClient {
     return false;
   }
 
-  async connect() {
-    if (typeof WebSocket === 'undefined') {
-      throw new Error('当前 Node.js 版本没有内置 WebSocket，请使用 Node.js 22+ 运行。');
+  canRenewAfterConnectError(error) {
+    if (error?.code !== 'XIUXIAN_WS_CONNECT_ERROR') return false;
+    if (!this.config.refreshToken && !this.config.recoveryId) return false;
+
+    const cooldown = Number(this.config.connectRenewCooldownMs);
+    if (Number.isFinite(cooldown) && cooldown > 0 && Date.now() - this.lastConnectRenewalAt < cooldown) {
+      return false;
     }
 
-    const sessionChanged = await this.ensureSession();
-    if (this.isOpen && !sessionChanged) return;
+    return true;
+  }
 
+  async forceRenewSessionAfterConnectError(error) {
+    this.lastConnectRenewalAt = Date.now();
+    await this.loadCachedSession();
+
+    console.warn(`[${now()}] ${formatError(error)}，尝试刷新 token 后重连。`);
+
+    if (this.config.refreshToken && isTokenUsable(this.config.refreshToken, 0)) {
+      try {
+        return await this.refreshSession();
+      } catch (refreshError) {
+        if (!this.config.recoveryId) throw refreshError;
+        console.warn(`[${now()}] refresh token 失败，改用续玩编号登录：${formatError(refreshError)}`);
+      }
+    }
+
+    if (this.config.recoveryId) return this.authenticateWithRecoveryId();
+
+    throw new Error('无法刷新 token：缺少可用 refresh token 或续玩编号');
+  }
+
+  async openSocket() {
     await this.close();
 
-    this.socket = new WebSocket(this.url);
+    const socket = new WebSocket(this.url);
+    this.socket = socket;
 
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error('WebSocket connect timeout'));
+        cleanup();
+        reject(makeConnectError('WebSocket connect timeout', 'XIUXIAN_WS_CONNECT_TIMEOUT'));
       }, this.config.requestTimeoutMs);
 
       const cleanup = () => {
         clearTimeout(timer);
-        this.socket?.removeEventListener('open', onOpen);
-        this.socket?.removeEventListener('error', onError);
+        socket.removeEventListener('open', onOpen);
+        socket.removeEventListener('error', onError);
       };
 
       const onOpen = () => {
@@ -388,20 +424,40 @@ class NakamaSocketClient {
       const onError = (event) => {
         cleanup();
         const hint = tokenExpiresAt(this.config.token) ? '，请确认 token 仍然有效' : '';
-        reject(new Error(event?.message || `WebSocket connect error${hint}`));
+        reject(makeConnectError(event?.message || `WebSocket connect error${hint}`));
       };
 
-      this.socket.addEventListener('open', onOpen);
-      this.socket.addEventListener('error', onError);
+      socket.addEventListener('open', onOpen);
+      socket.addEventListener('error', onError);
     });
 
-    this.socket.addEventListener('message', (event) => this.handleMessage(event.data));
-    this.socket.addEventListener('close', () => this.handleClose());
-    this.socket.addEventListener('error', (event) => {
+    socket.addEventListener('message', (event) => this.handleMessage(event.data));
+    socket.addEventListener('close', () => this.handleClose());
+    socket.addEventListener('error', (event) => {
       if (this.config.verbose) console.error(`[${now()}] socket error:`, event?.message || event);
     });
 
     this.startHeartbeat();
+  }
+
+  async connect() {
+    if (typeof WebSocket === 'undefined') {
+      throw new Error('当前 Node.js 版本没有内置 WebSocket，请使用 Node.js 22+ 运行。');
+    }
+
+    const sessionChanged = await this.ensureSession();
+    if (this.isOpen && !sessionChanged) return;
+
+    try {
+      await this.openSocket();
+    } catch (error) {
+      await this.close();
+
+      if (!this.canRenewAfterConnectError(error)) throw error;
+
+      await this.forceRenewSessionAfterConnectError(error);
+      await this.openSocket();
+    }
   }
 
   handleMessage(data) {

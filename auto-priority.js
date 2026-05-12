@@ -25,6 +25,12 @@ const {
   summarizeActionResult,
 } = require('./lib/map');
 const {
+  interactElement,
+  isStarSeaElement,
+  refreshElementTarget,
+  starSeaTargets,
+} = require('./lib/elements');
+const {
   createPatrol,
   patrolStep,
 } = require('./lib/patrol');
@@ -40,7 +46,8 @@ const {
 } = require('./lib/resources');
 const {
   createZoneIgnoreList,
-  isZoneTakenError,
+  isZoneUnavailableError,
+  zoneUnavailableReason,
   zoneTargets: makeZoneTargets,
 } = require('./lib/zones');
 
@@ -62,16 +69,71 @@ const CONFIG = {
   staminaRecoverMs: envNumber(['XIUXIAN_PRIORITY_STAMINA_RECOVER_MS', 'XIUXIAN_STAMINA_RECOVER_MS'], 10000),
   ignoredZoneTtlMs: envNumber(['XIUXIAN_PRIORITY_IGNORED_ZONE_TTL_MS', 'XIUXIAN_IGNORED_ZONE_TTL_MS'], 10 * 60 * 1000),
   searchMode: envString(['XIUXIAN_PRIORITY_SEARCH_MODE', 'XIUXIAN_ZONE_SEARCH_MODE'], 'patrol'),
+  starSeaEnabled: envString(['XIUXIAN_PRIORITY_STAR_SEA_ENABLED', 'XIUXIAN_STAR_SEA_ENABLED'], 'true') !== 'false',
+  starSeaOffsetMs: envNumber(['XIUXIAN_PRIORITY_STAR_SEA_OFFSET_MS', 'XIUXIAN_STAR_SEA_OFFSET_MS'], 1000),
+  starSeaWindowMs: envNumber(['XIUXIAN_PRIORITY_STAR_SEA_WINDOW_MS', 'XIUXIAN_STAR_SEA_WINDOW_MS'], 90 * 1000),
 };
 const ignoredZones = createZoneIgnoreList({ ttlMs: CONFIG.ignoredZoneTtlMs });
+const starSeaSchedule = { lastAttemptHour: '' };
 
 const PRIORITIES = [
   { zoneType: 'treasure', priority: 0, kind: 'zone', label: '仙宝' },
-  { zoneType: 'danger', priority: 1, kind: 'zone', label: '凶地' },
-  { zoneType: 'blessed', priority: 2, kind: 'zone', label: '福地' },
-  { resourceKind: 'herb', priority: 3, kind: 'herb', label: '采药' },
-  { resourceKind: 'beast', priority: 4, kind: 'beast', label: '捕兽' },
+  { elementType: 'star-sea', priority: 1, kind: 'element', label: '星海幻境' },
+  { zoneType: 'danger', priority: 2, kind: 'zone', label: '凶地' },
+  { zoneType: 'blessed', priority: 3, kind: 'zone', label: '福地' },
+  { resourceKind: 'herb', priority: 4, kind: 'herb', label: '采药' },
+  { resourceKind: 'beast', priority: 5, kind: 'beast', label: '捕兽' },
 ];
+
+function localHourKey(timestamp = Date.now()) {
+  const date = new Date(timestamp);
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hour = String(date.getHours()).padStart(2, '0');
+  return `${date.getFullYear()}-${month}-${day} ${hour}`;
+}
+
+function localHourStart(timestamp = Date.now()) {
+  const date = new Date(timestamp);
+  date.setMinutes(0, 0, 0);
+  return date.getTime();
+}
+
+function isStarSeaWindowOpen(timestamp = Date.now()) {
+  if (!CONFIG.starSeaEnabled) return false;
+  const elapsed = timestamp - localHourStart(timestamp);
+  return elapsed >= CONFIG.starSeaOffsetMs && elapsed < CONFIG.starSeaOffsetMs + CONFIG.starSeaWindowMs;
+}
+
+function shouldAttemptStarSea(timestamp = Date.now()) {
+  return isStarSeaWindowOpen(timestamp) && !hasAttemptedStarSea(timestamp);
+}
+
+function hasAttemptedStarSea(timestamp = Date.now()) {
+  return starSeaSchedule.lastAttemptHour === localHourKey(timestamp);
+}
+
+function markStarSeaAttempt(timestamp = Date.now()) {
+  starSeaSchedule.lastAttemptHour = localHourKey(timestamp);
+}
+
+function isStarSeaTarget(target) {
+  return target?.kind === 'element' && target.elementType === 'star-sea';
+}
+
+function starSeaWindowStatus(timestamp = Date.now()) {
+  if (!CONFIG.starSeaEnabled) return 'disabled';
+  const hourKey = localHourKey(timestamp);
+  if (starSeaSchedule.lastAttemptHour === hourKey) return `${hourKey} 已尝试`;
+  if (isStarSeaWindowOpen(timestamp)) return `${hourKey} 窗口开启`;
+
+  const hourStart = localHourStart(timestamp);
+  const elapsed = timestamp - hourStart;
+  const next = elapsed < CONFIG.starSeaOffsetMs
+    ? hourStart + CONFIG.starSeaOffsetMs
+    : hourStart + 60 * 60 * 1000 + CONFIG.starSeaOffsetMs;
+  return `下次 ${new Date(next).toLocaleString('zh-CN', { hour12: false })}`;
+}
 
 function validateConfig() {
   if (!['capture', 'hunt'].includes(CONFIG.beastAction)) throw new Error('invalid beast action, expected capture/hunt');
@@ -82,27 +144,30 @@ function validateConfig() {
   assertNumber('retry delay', CONFIG.retryDelayMs, { min: 0, inclusive: false });
   assertNumber('stamina recover delay', CONFIG.staminaRecoverMs, { min: 0, inclusive: false });
   assertNumber('ignored zone ttl', CONFIG.ignoredZoneTtlMs, { min: 0, inclusive: false });
+  assertNumber('star sea offset', CONFIG.starSeaOffsetMs, { min: 0 });
+  assertNumber('star sea window', CONFIG.starSeaWindowMs, { min: 0, inclusive: false });
 }
 
 function priorityTargets(state) {
   const treasure = makeZoneTargets(state, PRIORITIES[0], ignoredZones);
-  const danger = makeZoneTargets(state, PRIORITIES[1], ignoredZones);
-  const blessed = makeZoneTargets(state, PRIORITIES[2], ignoredZones);
+  const starSea = shouldAttemptStarSea() ? starSeaTargets(state, PRIORITIES[1]) : [];
+  const danger = makeZoneTargets(state, PRIORITIES[2], ignoredZones);
+  const blessed = makeZoneTargets(state, PRIORITIES[3], ignoredZones);
   const herbs = visibleHerbs(state)
     .filter(isHerbReady)
     .map((herb) => ({
       ...herb,
-      priority: PRIORITIES[3].priority,
-      priorityLabel: PRIORITIES[3].label,
+      priority: PRIORITIES[4].priority,
+      priorityLabel: PRIORITIES[4].label,
     }));
   const beasts = visibleBeasts(state)
     .map((beast) => ({
       ...beast,
-      priority: PRIORITIES[4].priority,
-      priorityLabel: PRIORITIES[4].label,
+      priority: PRIORITIES[5].priority,
+      priorityLabel: PRIORITIES[5].label,
     }));
 
-  return [...treasure, ...danger, ...blessed, ...herbs, ...beasts]
+  return [...treasure, ...starSea, ...danger, ...blessed, ...herbs, ...beasts]
     .sort((a, b) => a.priority - b.priority || a.distance_to_player - b.distance_to_player);
 }
 
@@ -114,10 +179,14 @@ function chooseTreasureTarget(state) {
   return makeZoneTargets(state, PRIORITIES[0], ignoredZones)[0] || null;
 }
 
+function chooseStarSeaTarget(state) {
+  return shouldAttemptStarSea() ? starSeaTargets(state, PRIORITIES[1])[0] || null : null;
+}
+
 function targetKey(target) {
   if (!target) return '';
   const stableId = target.id || `${target.tile_x},${target.tile_y}`;
-  return `${target.kind}:${target.zoneType || ''}:${stableId}`;
+  return `${target.kind}:${target.zoneType || target.elementType || ''}:${stableId}`;
 }
 
 function sameTarget(left, right) {
@@ -126,6 +195,7 @@ function sameTarget(left, right) {
 
 function targetLabel(target) {
   if (target.kind === 'zone') return `${target.priorityLabel} ${target.name || target.id}`;
+  if (target.kind === 'element') return `${target.priorityLabel} ${target.name || target.element_label || target.id}`;
   return `${target.priorityLabel} ${resourceTargetLabel(target)}`;
 }
 
@@ -141,6 +211,18 @@ function refreshPriorityTarget(state, target) {
     return definition
       ? makeZoneTargets(state, definition, ignoredZones).find((zone) => sameTarget(zone, target)) || null
       : null;
+  }
+
+  if (target.kind === 'element') {
+    const fresh = refreshElementTarget(state, target);
+    if (!fresh || !fresh.can_interact || !isStarSeaElement(fresh)) return null;
+    const definition = PRIORITIES.find((item) => item.elementType === target.elementType);
+    return {
+      ...fresh,
+      elementType: target.elementType,
+      priority: definition?.priority || target.priority,
+      priorityLabel: definition?.label || target.priorityLabel,
+    };
   }
 
   const fresh = refreshResourceTarget(state, target);
@@ -169,19 +251,20 @@ function printState(state) {
   const player = state?.player;
   const position = getPosition(player);
 
-  console.log(`[${now()}] position=(${position.x},${position.y}) stamina=${getStamina(player) ?? '-'} exploring=${isExploring(player)} ignored_zones=${ignoredZones.size}`);
+  console.log(`[${now()}] position=(${position.x},${position.y}) stamina=${getStamina(player) ?? '-'} exploring=${isExploring(player)} ignored_zones=${ignoredZones.size} star_sea=${starSeaWindowStatus()}`);
   printTargetGroup('仙宝', makeZoneTargets(state, PRIORITIES[0], ignoredZones));
-  printTargetGroup('凶地', makeZoneTargets(state, PRIORITIES[1], ignoredZones));
-  printTargetGroup('福地', makeZoneTargets(state, PRIORITIES[2], ignoredZones));
+  printTargetGroup('星海幻境', starSeaTargets(state, PRIORITIES[1]));
+  printTargetGroup('凶地', makeZoneTargets(state, PRIORITIES[2], ignoredZones));
+  printTargetGroup('福地', makeZoneTargets(state, PRIORITIES[3], ignoredZones));
   printTargetGroup('成熟灵植', visibleHerbs(state).filter(isHerbReady).map((herb) => ({
     ...herb,
-    priority: PRIORITIES[3].priority,
-    priorityLabel: PRIORITIES[3].label,
+    priority: PRIORITIES[4].priority,
+    priorityLabel: PRIORITIES[4].label,
   })));
   printTargetGroup('灵兽', visibleBeasts(state).map((beast) => ({
     ...beast,
-    priority: PRIORITIES[4].priority,
-    priorityLabel: PRIORITIES[4].label,
+    priority: PRIORITIES[5].priority,
+    priorityLabel: PRIORITIES[5].label,
   })));
 
   const best = choosePriorityTarget(state);
@@ -207,10 +290,11 @@ async function exploreZone(client, state, zone) {
   try {
     result = await client.rpc('action.explore_zone', { zone_id: zone.id });
   } catch (error) {
-    if (!isZoneTakenError(error)) throw error;
+    if (!isZoneUnavailableError(error)) throw error;
 
-    ignoredZones.mark(zone, '机缘已被他人先一步夺取');
-    console.log(`[${now()}] ${targetLabel(zone)} 已被他人先一步夺取，已加入本次运行的忽略列表，继续寻找下一个目标。`);
+    const reason = zoneUnavailableReason(error);
+    ignoredZones.mark(zone, reason);
+    console.log(`[${now()}] ${targetLabel(zone)} ${reason}，已加入本次运行的忽略列表，继续寻找下一个目标。`);
     return { state, skipped: true };
   }
 
@@ -242,6 +326,15 @@ async function actOnTarget(client, state, target) {
       await waitForExplorationIfNeeded(explored.state.player);
     }
     return { state: explored.state, acted: true };
+  }
+
+  if (fresh.kind === 'element') {
+    const interacted = await interactElement(client, state, fresh, {
+      dryRun: flags.dryRun,
+      label: fresh.priorityLabel || '地图元素',
+    });
+    if (fresh.elementType === 'star-sea' && !flags.dryRun) markStarSeaAttempt();
+    return { state: interacted.state, acted: !interacted.skipped };
   }
 
   if (fresh.kind === 'herb') {
@@ -286,6 +379,12 @@ async function settleBusyState(client, state) {
     return { state: nextState, claimedGather: false };
   }
 
+  const starSea = chooseStarSeaTarget(nextState);
+  if (starSea) {
+    console.log(`[${now()}] 星海幻境窗口开启，发现 ${starSea.name || starSea.id}，立即转入星海幻境优先级。`);
+    return { state: nextState, claimedGather: false };
+  }
+
   const gather = await claimGatherIfNeeded(client, nextState, {
     dryRun: flags.dryRun,
     gatherWaitMs: CONFIG.gatherWaitMs,
@@ -320,6 +419,24 @@ async function runCycle({ client, cycle }) {
     staminaRecoverMs: CONFIG.staminaRecoverMs,
     labelTarget: targetLabel,
     beforeStep: ({ state: currentState, target: currentTarget }) => {
+      if (isStarSeaTarget(currentTarget) && !hasAttemptedStarSea()) {
+        const treasure = chooseTreasureTarget(currentState);
+        if (treasure) {
+          console.log(`[${now()}] 发现仙宝，暂停星海幻境并切换为 ${formatTarget(treasure)}。`);
+          target = treasure;
+          return { target: treasure };
+        }
+
+        const freshStarSea = refreshPriorityTarget(currentState, currentTarget);
+        if (!freshStarSea) {
+          console.log(`[${now()}] 星海幻境已消失，停止本次移动并重新搜索。`);
+          return { stop: true };
+        }
+
+        target = freshStarSea;
+        return { target: freshStarSea };
+      }
+
       const best = choosePriorityTarget(currentState);
 
       if (!best) {
@@ -340,16 +457,32 @@ async function runCycle({ client, cycle }) {
   if (flags.dryRun || stopController.stopped) return false;
 
   state = await fetchState(client);
-  const best = choosePriorityTarget(state);
-  if (!best) {
-    console.log(`[${now()}] 到达前优先目标已消失，重新搜索。`);
-    return false;
-  }
+  if (isStarSeaTarget(target) && !hasAttemptedStarSea()) {
+    const treasure = chooseTreasureTarget(state);
+    if (treasure) {
+      console.log(`[${now()}] 到达前发现仙宝，切换为 ${formatTarget(treasure)}。`);
+      target = treasure;
+      if (!hasArrived(state.player, target)) return false;
+    } else {
+      const freshStarSea = refreshPriorityTarget(state, target);
+      if (!freshStarSea) {
+        console.log(`[${now()}] 到达前星海幻境已消失，重新搜索。`);
+        return false;
+      }
+      target = freshStarSea;
+    }
+  } else {
+    const best = choosePriorityTarget(state);
+    if (!best) {
+      console.log(`[${now()}] 到达前优先目标已消失，重新搜索。`);
+      return false;
+    }
 
-  if (!sameTarget(best, target)) {
-    console.log(`[${now()}] 到达前发现更高优先级目标，切换为 ${formatTarget(best)}。`);
-    target = best;
-    if (!hasArrived(state.player, target)) return false;
+    if (!sameTarget(best, target)) {
+      console.log(`[${now()}] 到达前发现更高优先级目标，切换为 ${formatTarget(best)}。`);
+      target = best;
+      if (!hasArrived(state.player, target)) return false;
+    }
   }
 
   const action = await actOnTarget(client, state, target);
@@ -364,5 +497,5 @@ runMain(runScript({
   validate: validateConfig,
   printState,
   runCycle,
-  startMessage: () => `auto priority started, order=仙宝>凶地>福地>采药>捕兽 beast_action=${CONFIG.beastAction} search_mode=${CONFIG.searchMode} dry_run=${flags.dryRun}`,
+  startMessage: () => `auto priority started, order=仙宝>星海幻境>凶地>福地>采药>捕兽 star_sea_window=${CONFIG.starSeaWindowMs}ms beast_action=${CONFIG.beastAction} search_mode=${CONFIG.searchMode} dry_run=${flags.dryRun}`,
 }));
