@@ -1,0 +1,10 @@
+export function cx(...values) {
+  return values.flatMap((value) => {
+    if (!value) return [];
+    if (Array.isArray(value)) return value;
+    if (typeof value === 'object') {
+      return Object.entries(value).filter(([, enabled]) => enabled).map(([key]) => key);
+    }
+    return [value];
+  }).join(' ');
+}

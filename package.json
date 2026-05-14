@@ -6,16 +6,20 @@
     "dev": "node server/dashboard.js",
     "start": "NODE_ENV=production node server/dashboard.js",
     "build": "vite build",
-    "check": "node --check server/dashboard.js && node --check xiuxian-common.js && node --check lib/runtime.js && node --check lib/map.js && node --check lib/patrol.js && node --check lib/resources.js && node --check lib/elements.js && node --check lib/zones.js && node --check lib/zone-explorer.js && node --check auto-xiulian.js && node --check auto-fudi.js && node --check auto-danger.js && node --check auto-forage.js && node --check auto-priority.js"
+    "check": "find server lib -name '*.js' -print0 | xargs -0 -n1 node --check && node --check xiuxian-common.js && node --check auto-xiulian.js && node --check auto-fudi.js && node --check auto-danger.js && node --check auto-forage.js && node --check auto-priority.js"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "express": "latest",
     "framer-motion": "latest",
     "lucide-react": "latest",
+    "node-cron": "^4.2.1",
     "react": "latest",
     "react-dom": "latest",
     "vite": "latest"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "tailwindcss": "^4.3.0"
+  }
 }

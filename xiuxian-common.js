@@ -118,6 +118,9 @@ function makeNakamaConfig(options = {}) {
     requestTimeoutMs: envNumber(['XIUXIAN_TIMEOUT_MS', 'XIULIAN_TIMEOUT_MS'], 12000),
     heartbeatMs: envNumber(['XIUXIAN_HEARTBEAT_MS', 'XIULIAN_HEARTBEAT_MS'], 25000),
     connectRenewCooldownMs: envNumber(['XIUXIAN_CONNECT_RENEW_COOLDOWN_MS', 'XIULIAN_CONNECT_RENEW_COOLDOWN_MS'], options.connectRenewCooldownMs ?? CONNECT_RENEW_COOLDOWN_MS),
+    roleName: envString(['XIUXIAN_ROLE_NAME'], options.roleName || ''),
+    roleStateReportUrl: envString(['XIUXIAN_ROLE_STATE_REPORT_URL'], options.roleStateReportUrl || ''),
+    roleStateReportMinIntervalMs: envNumber(['XIUXIAN_ROLE_STATE_REPORT_MIN_INTERVAL_MS'], options.roleStateReportMinIntervalMs ?? 3000),
     cidPrefix: options.cidPrefix || 'rpc',
     verbose: Boolean(options.verbose),
   };
@@ -227,6 +230,7 @@ class NakamaSocketClient {
     this.heartbeatTimer = null;
     this.sessionLoaded = false;
     this.lastConnectRenewalAt = 0;
+    this.lastRoleStateReportAt = 0;
   }
 
   get url() {
@@ -517,7 +521,34 @@ class NakamaSocketClient {
       },
     });
 
-    return unwrapRpcPayload(response.rpc);
+    const result = unwrapRpcPayload(response.rpc);
+    this.reportRoleStateIfNeeded(result, id);
+    return result;
+  }
+
+  reportRoleStateIfNeeded(result, source = 'rpc') {
+    if (!this.config.roleName || !this.config.roleStateReportUrl || !result?.player) return;
+
+    const nowMs = Date.now();
+    const minInterval = Number(this.config.roleStateReportMinIntervalMs);
+    if (Number.isFinite(minInterval) && minInterval > 0 && nowMs - this.lastRoleStateReportAt < minInterval) return;
+    this.lastRoleStateReportAt = nowMs;
+
+    fetch(this.config.roleStateReportUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: this.config.roleName,
+        source,
+        state: {
+          player: result.player,
+          combat_power: result.combat_power,
+          region_online_count: result.region_online_count,
+        },
+      }),
+    }).catch((error) => {
+      if (this.config.verbose) console.error(`[${now()}] role state report failed: ${formatError(error)}`);
+    });
   }
 
   startHeartbeat() {
